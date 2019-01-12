@@ -3,9 +3,6 @@
 const superagent = require('superagent');
 
 const { Logger } = require('../utils/Logger');
-const { sleep } = require('../utils/utils');
-
-const webhooks = require('../../configs/webhooks.json');
 
 /**
  * Handle all requests made to discord webhooks
@@ -28,26 +25,13 @@ class WHRequestHandler {
      *      headers: headers (superagent set)
      *      body: body (superagent send)
      *  }
-     *
-     * rateLimited =
-     *  {
-     *      webhook.id: delay (ms)
-     *  }
-     *
-     * reqWaiting =
-     *  {
-     *      webhook.id: [ { webhookObj, reqObj, type } ]
-     *  }
      */
     constructor() {
-        this._baseURL = 'https://discordapp.com/api';
+        this._baseURL = 'https://discordapp.com/api/v6';
 
-        /** Cached webhooks */
-        this.webhooks = webhooks;
-
-        /** Webhooks Ratr-limit handling */
-        this.rateLimited = {};
-        this.reqWaiting = {};
+        /** Collections for handling rate-limits and queue */
+        this.rateLimitCollection = new Map();
+        this.queueCollection = new Map();
     }
 
     get baseURL() {
@@ -65,87 +49,116 @@ class WHRequestHandler {
      * @returns {Promise}
      * @memberof WHRequestHandler
      */
-    request(webhook, req, type = false) {
-        if (this.rateLimited[webhook.id] && Date.now() < this.rateLimited[webhook.id]) { // rate limited + ratelimit not over
-            Logger.debug(`this.rateLimited: ${webhook.name} => delaying...`);
+    async request(webhook, req, type = false) {
+        const { name, id, token } = webhook;
+        const { headers, body } = req;
+        const endpoint = `${id}/${token}`;
+        const requestURL = `${this._baseURL}/${id}/${token}/${(type === true) ? 'github' : ''}`;
 
-            if (!this.reqWaiting[webhook.id]) {
-                this.reqWaiting[webhook.id] = [];
+        const queue = this.queueCollection.get(endpoint) || Promise.resolve();
+        const request = queue.then(() => this.conditionalsHandler(endpoint, requestURL, 'post', headers, {}, body, name));
+        const tail = request.catch(() => {}); // eslint-disable-line
+        this.queueCollection.set(endpoint, tail);
+
+        try {
+            return await request;
+        } finally {
+            if (this.queueCollection.get(endpoint) === tail) {
+                this.queueCollection.delete(endpoint);
             }
-            this.reqWaiting[webhook.id].push({ webhook, req, type }); // store the request for later
-
-            return Promise.resolve();
-        } else if (this.rateLimited[webhook.id] && Date.now() < this.rateLimited[webhook.id]) { // ratelimit over
-            delete this.rateLimited[webhook.id]; // delete this.rateLimited cache + keep executing request
         }
-
-        return superagent
-            .post(`${this.baseURL}/webhooks/${webhook.id}/${webhook.token}${type ? '/github' : ''}`)
-            .set(req.headers)
-            .send(req.body)
-            .then(value => {
-                if (value.headers['x-ratelimit-remaining'] === '0') { // getting ratelmited. Next request won't be executed
-                    this.rateLimited[webhook.id] = value.headers['x-ratelimit-reset'] * 1000;
-                    Logger.debug(`Hitting Rate-limit for: ${webhook.name}.`);
-                }
-            })
-            .catch(err => {
-                /**
-                 * Rate-limited Error could occur in an edge case if something else would have triggered the webhook
-                 * Rate Limits the webhook and delays the request
-                 */
-                if (err.status === 429) {
-                    Logger.debug(`Already RateLimited: ${webhook.name} => delaying...`);
-
-                    this.rateLimited[webhook.id] = err.response.headers['x-ratelimit-reset'];
-
-                    if (!this.reqWaiting[webhook.id]) {
-                        this.reqWaiting[webhook.id] = [];
-                    }
-                    this.reqWaiting[webhook.id].push({ webhook, req, type });
-                } else {
-                    throw err;
-                }
-            });
     }
 
-    /**
-     * Executes all pending request in reqWaiting
-     *
-     * @returns {Promise}
-     */
-    async executeWaiting() {
-    // Is there a pending request?
-        if (Object.keys(this.reqWaiting).length === 0) {
+    superagent(requestURL, method, headers, queryParams, fields) {
+        return superagent(method, requestURL)
+            .set(headers || {})
+            .query(queryParams || {})
+            .send(fields);
+    }
+
+    setOrEditRateLimitCache(endpoint, header, edit, statusCode, name) {
+        const discordHeader = Number(header['x-ratelimit-remaining']);
+
+        if ((discordHeader === 0) || (statusCode === 429)) {
+            const discordResetTime = Number(header['x-ratelimit-reset']) * 1000;
+            const discordRetryAfter = Number(header['retry-after']) + Date.now();
+            const timestamp = discordResetTime ^ ((discordResetTime ^ discordRetryAfter) & -(discordResetTime < discordRetryAfter));
+
+            Logger.debug(`${(statusCode !== 429) ? 'Hitting Rate-limit for' : 'Already ratelimited'}: ${name}.`);
+
+            if (header['x-ratelimit-global']) {
+                this.rateLimitCollection.set('global', discordRetryAfter);
+                return;
+            } else {
+                this.rateLimitCollection.set(endpoint, timestamp);
+                return;
+            }
+        } else if (edit === true) {
+            this.rateLimitCollection.delete(endpoint);
             return;
         }
-        // Executes pending request
-        for (const waiting in this.reqWaiting) {
-        // Checks the ratelimit delay value
-            const delay = this.rateLimited[waiting] - Date.now();
-            if (delay > 0) {
-            // Waits the delay left if the ratelimit is not over
-                await sleep(delay);
-            }
+    }
 
-            // Executes all requests
-            for (const request of this.reqWaiting[waiting]) {
-                await this.request(request.webhook, request.req, request.type)
-                    .then(Logger.verbose(`Posted to ${request.webhook.name}.`))
-                    .catch(err => {
-                        Logger.fatal(`Couldn't post to ${request.webhook.name}.\n${err}`);
+    async conditionalsHandler(endpoint, requestURL, method, headers, query, body, name) {
+        try {
+            if ((this.rateLimitCollection.has(endpoint) === false) && (this.rateLimitCollection.has('global') === false)) {
+                const response = await this.superagent(requestURL, method, headers, query, body);
+                this.setOrEditRateLimitCache(endpoint, response.header, false, response.status, name);
+                this.queueCollection.delete(endpoint);
+                Logger.verbose(`Posted to ${name}.`);
+                return response;
+            } else {
+                const endpointTimestamp = this.rateLimitCollection.get(endpoint) || 0;
+                const globalTimestamp = this.rateLimitCollection.get('global') || 0;
+                const timestamp = endpointTimestamp ^ ((endpointTimestamp ^ globalTimestamp) & -(endpointTimestamp < globalTimestamp));
+
+                if (timestamp >= Date.now()) {
+                    const response = new Promise((resolve, reject) => {
+                        setTimeout(async() => {
+                            try {
+                                const response = await this.superagent(requestURL, method, headers, query, body);
+                                resolve(response);
+                                this.setOrEditRateLimitCache(endpoint, response.header, true, response.status, name);
+                            } catch (error) {
+                                if (error.status === 429) { // Rate-Limited error
+                                    Logger.debug(`Already RateLimited: ${name} => delaying...`);
+                                    this.setOrEditRateLimitCache(endpoint, error.response.header, false, 429, name);
+                                    this.conditionalsHandler(endpoint, requestURL, method, headers, query, body)
+                                        .then(response => resolve(response))
+                                        .catch(error => reject(error));
+                                } else {
+                                    reject(error);
+                                }
+                            }
+                        }, timestamp - Date.now());
                     });
-                // Pops from current pending once executed
-                this.reqWaiting[waiting].pop();
+                    Logger.verbose(`Posted to ${name}.`);
+                    return response;
+                } else {
+                    const response = await this.superagent(requestURL, method, headers, query, body);
+                    this.setOrEditRateLimitCache(endpoint, response.header, true, response.status, name);
+                    Logger.verbose(`Posted to ${name}.`);
+                    return response;
+                }
             }
+        } catch (error) {
+            if (error.status === 429) { // Rate-Limited error
+                Logger.debug(`Already RateLimited: ${name} => delaying...`);
+                this.setOrEditRateLimitCache(endpoint, error.response.header, false, 429);
+                const response = new Promise((resolve, reject) => {
+                    setTimeout(() => { // https://stackoverflow.com/a/20999077/10901309
+                        this.conditionalsHandler(endpoint, requestURL, method, headers, query, body)
+                            .then(response => resolve(response))
+                            .catch(error => reject(error));
+                    }, 0);
+                });
 
-            // Deletes waiting request for this webhook
-            if (this.reqWaiting[waiting].length === 0) {
-                delete this.reqWaiting[waiting];
+                return response;
+            } else {
+                Logger.fatal(`Couldn't post to ${name}.\n${error}`);
+                throw error;
             }
         }
-        // Recursive in case there are new pending requests
-        this.executeWaiting();
     }
 }
 
