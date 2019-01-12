@@ -69,12 +69,34 @@ class WHRequestHandler {
         }
     }
 
+    /**
+     * Makes API requests using superagent
+     *
+     * @param {String} requestURL
+     * @param {String} method
+     * @param {Object} headers
+     * @param {Object} queryParams
+     * @param {Object} fields
+     * @returns {Promise}
+     */
+
     superagent(requestURL, method, headers, queryParams, fields) {
         return superagent(method, requestURL)
             .set(headers || {})
             .query(queryParams || {})
             .send(fields);
     }
+
+    /**
+     * Sets or edits Cache to handle rate-limits
+     *
+     * @param {String} endpoint
+     * @param {Object} header
+     * @param {Boolean} edit
+     * @param {Number} statusCode
+     * @param {String} name
+     * @returns {void}
+     */
 
     setOrEditRateLimitCache(endpoint, header, edit, statusCode, name) {
         const discordHeader = Number(header['x-ratelimit-remaining']);
@@ -99,6 +121,18 @@ class WHRequestHandler {
         }
     }
 
+    /**
+     * Handles rate-limit conditions
+     *
+     * @param {String} endpoint
+     * @param {String} requestURL
+     * @param {String} method
+     * @param {Object} headers
+     * @param {Object} query
+     * @param {Object} body
+     * @param {String} name
+     * @returns {Promise}
+     */
     async conditionalsHandler(endpoint, requestURL, method, headers, query, body, name) {
         try {
             if ((this.rateLimitCollection.has(endpoint) === false) && (this.rateLimitCollection.has('global') === false)) {
