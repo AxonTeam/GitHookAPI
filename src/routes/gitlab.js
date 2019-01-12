@@ -6,7 +6,7 @@ const config = require('../../configs/config.json');
 const { Logger } = require('../utils/Logger');
 
 const { IPBanHandler } = require('../services/IPBanHandler');
-const { WHRequestHandler } = require('../services/WHRequestHandler');
+const requestHandler = require('../services/WHRequestHandler');
 
 const { Parser } = require('../services/Parser');
 
@@ -27,7 +27,6 @@ const gitlab = async(req, res) => {
     }
 
     Logger.notice(`Gitlab: ${req.body.project.path_with_namespace} - ${req.body.project.http_url}`); // TO CHANGE
-    res.send('Success!');
     Logger.info('Forwarding gitlab request');
 
     // Creating body formatted for discord
@@ -40,18 +39,18 @@ const gitlab = async(req, res) => {
     const headers = { 'Content-Type': 'application/json' };
 
     // Sending to all webhooks
-    for (const webhook of WHRequestHandler.webhooks) {
+    for (const webhook of requestHandler.webhooks) {
         if (webhook.id && webhook.token) {
             try {
-                await WHRequestHandler.request(webhook, { headers, body });
                 Logger.verbose(`Posted to ${webhook.name}.`);
+                return await requestHandler.request(webhook, { headers, body });
             } catch (err) {
-                Logger.fatal(`Couldn't post to ${webhook.name}.\n${err.stack}`);
+                return Logger.fatal(`Couldn't post to ${webhook.name}.\n${err.stack}`);
             }
         }
     }
 
-    WHRequestHandler.executeWaiting();
+    return res.send('Success!');
 };
 
 exports.gitlab = gitlab;

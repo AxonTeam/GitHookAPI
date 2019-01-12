@@ -3,6 +3,7 @@
 const superagent = require('superagent');
 
 const { Logger } = require('../utils/Logger');
+const webhooks = require('../../configs/webhooks.json');
 
 /**
  * Handle all requests made to discord webhooks
@@ -28,6 +29,7 @@ class WHRequestHandler {
      */
     constructor() {
         this._baseURL = 'https://discordapp.com/api/v6';
+        this.webhooks = webhooks;
 
         /** Collections for handling rate-limits and queue */
         this.rateLimitCollection = new Map();
@@ -53,7 +55,7 @@ class WHRequestHandler {
         const { name, id, token } = webhook;
         const { headers, body } = req;
         const endpoint = `${id}/${token}`;
-        const requestURL = `${this._baseURL}/${id}/${token}/${(type === true) ? 'github' : ''}`;
+        const requestURL = `${this._baseURL}/webhooks/${id}/${token}/${(type === true) ? 'github' : ''}`;
 
         const queue = this.queueCollection.get(endpoint) || Promise.resolve();
         const request = queue.then(() => this.conditionalsHandler(endpoint, requestURL, 'post', headers, {}, body, name));
@@ -196,4 +198,4 @@ class WHRequestHandler {
     }
 }
 
-exports.WHRequestHandler = new WHRequestHandler();
+module.exports = new WHRequestHandler();

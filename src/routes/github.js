@@ -6,7 +6,7 @@ const config = require('../../configs/config.json');
 const { Logger }  = require('../utils/Logger');
 
 const { IPBanHandler } = require('../services/IPBanHandler');
-const { WHRequestHandler } = require('../services/WHRequestHandler');
+const requestHandler = require('../services/WHRequestHandler');
 
 const { verifyGithubSignature } = require('../utils/utils');
 
@@ -60,26 +60,23 @@ const github = async(req, res) => {
         Logger.notice(`Github: ${req.body.repository.full_name} - ${req.body.repository.url}`);
     }
 
-    res.send('Success!');
     Logger.info('Forwarding github request');
 
     // Creating new headers
     const headers = constructHeaders(req.headers);
 
     // Sending to all webhooks
-    for (const webhook of WHRequestHandler.webhooks) {
-        if (webhook.id && webhook.token) {
+    for (const { name, id, token } of requestHandler.webhooks) {
+        if (id && token) {
             try {
-                await WHRequestHandler.request(webhook, { headers, body: req.body }, true);
-                Logger.verbose(`Posted to ${webhook.name}.`);
+                await requestHandler.request({ name, id, token }, { headers, body: req.body }, true);
             } catch (err) {
-                Logger.fatal(`Couldn't post to ${webhook.name}.\n${err.stack}`);
+                return Logger.fatal(`Couldn't post to ${name}.\n${err.stack}`);
             }
         }
     }
 
-    // Executing all pending request
-    WHRequestHandler.executeWaiting();
+    return res.send('Success!');
 };
 
 exports.github = github;
