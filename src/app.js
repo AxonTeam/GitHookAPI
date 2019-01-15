@@ -32,4 +32,4 @@ app.use((req, res) => {
     routes.router(req, res);
 });
 
-app.listen(config.port, Logger.notice(`Listening to port ${config.port}`));
+app.listen((process.env.PORT || config.port), Logger.notice(`Listening to port ${config.port}`));
